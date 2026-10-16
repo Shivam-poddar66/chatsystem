@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Private Chat | React + Node.js + MySQL</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- React & ReactDOM (v18) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel Standalone for JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Socket.IO Client -->
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .typing-dot {
+            animation: typingAnimation 1.4s infinite ease-in-out both;
+        }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes typingAnimation {
+            0%, 80%, 100% { transform: scale(0); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased font-sans h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // API Client Helpers
+        const API_BASE = '/api';
+
+        async function apiFetch(endpoint, options = {}) {
+            const token = localStorage.getItem('chat_token');
+            const headers = {
+                'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                ...options.headers,
+            };
+
+            const response = await fetch(`${API_BASE}${endpoint}`, {
+                ...options,
+                headers,
+            });
+
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.message || 'Request failed');
+            }
+            return data;
+        }
+
+        // ==========================================
+        // MAIN APP COMPONENT
+        // ==========================================
+        function App() {
+            const [currentUser, setCurrentUser] = useState(null);
+            const [token, setToken] = useState(localStorage.getItem('chat_token'));
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                if (token) {
+                    apiFetch('/auth/me')
+                        .then(res => setCurrentUser(res.data))
+                        .catch(() => {
+                            localStorage.removeItem('chat_token');
+                            setToken(null);
+                            setCurrentUser(null);
+                        })
+                        .finally(() => setLoading(false));
+                } else {
+                    setLoading(false);
+                }
+            }, [token]);
+
+            const handleLoginSuccess = (userData, userToken) => {
+                localStorage.setItem('chat_token', userToken);
+                setToken(userToken);
+                setCurrentUser(userData);
+            };
+
+            const handleLogout = () => {
+                localStorage.removeItem('chat_token');
+                setToken(null);
+                setCurrentUser(null);
+            };
+
+            if (loading) {
+                return (
+                    <div class="flex items-center justify-center h-full bg-slate-900 text-white">
+                        <div class="flex flex-col items-center gap-3">
+                            <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                            <p class="text-sm text-slate-400 font-medium tracking-wide">Loading Chat System...</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return currentUser ? (
+                <ChatDashboard currentUser={currentUser} token={token} onLogout={handleLogout} />
+            ) : (
+                <AuthScreen onLoginSuccess={handleLoginSuccess} />
+            );
+        }
+
+        // ==========================================
+        // AUTHENTICATION SCREEN
+        // ==========================================
+        function AuthScreen({ onLoginSuccess }) {
+            const [isRegister, setIsRegister] = useState(false);
+            const [name, setName] = useState('');
+            const [email, setEmail] = useState('');
+            const [phone, setPhone] = useState('');
+            const [password, setPassword] = useState('password123');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                setLoading(true);
+
+                try {
+                    const endpoint = isRegister ? '/auth/register' : '/auth/login';
+                    const payload = isRegister ? { name, email, phone, password } : { email, password };
+                    const res = await apiFetch(endpoint, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                    });
+
+                    onLoginSuccess(res.data.user, res.data.token);
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const quickLogin = async (demoEmail) => {
+                setError('');
+                setLoading(true);
+                try {
+                    const res = await apiFetch('/auth/login', {
+                        method: 'POST',
+                        body: JSON.stringify({ email: demoEmail, password: 'password123' }),
+                    });
+                    onLoginSuccess(res.data.user, res.data.token);
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div class="flex h-full items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 p-4">
+                    <div class="w-full max-w-md bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-8 border border-white/20">
+                        {/* Header */}
+                        <div class="text-center mb-6">
+                            <div class="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-blue-500/30">
+                                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                            </div>
+                            <h1 class="text-2xl font-bold text-slate-800">Real-Time Chat</h1>
+                            <p class="text-xs text-slate-500 mt-1">Socket.IO • Node.js • MySQL • Data Masking</p>
+                        </div>
+
+                        {error && (
+                            <div class="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-medium">
+                                {error}
+                            </div>
+                        )}
+
+                        <form onSubmit={handleSubmit} class="space-y-4">
+                            {isRegister && (
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Full Name</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={name}
+                                        onChange={(e) => setName(e.target.value)}
+                                        placeholder="Alice Smith"
+                                        class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                            )}
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Email Address</label>
+                                <input
+                                    type="email"
+                                    required
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    placeholder="alice@example.com"
+                                    class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+
+                            {isRegister && (
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Phone (Optional)</label>
+                                    <input
+                                        type="text"
+                                        value={phone}
+                                        onChange={(e) => setPhone(e.target.value)}
+                                        placeholder="+91 9876543210"
+                                        class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                            )}
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Password</label>
+                                <input
+                                    type="password"
+                                    required
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="••••••••"
+                                    class="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                class="w-full py-3 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] transition text-white font-semibold rounded-lg shadow-md shadow-blue-500/20 text-sm flex items-center justify-center gap-2"
+                            >
+                                {loading && <div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>}
+                                {isRegister ? 'Create Account' : 'Sign In'}
+                            </button>
+                        </form>
+
+                        <div class="mt-4 text-center">
+                            <button
+                                type="button"
+                                onClick={() => { setIsRegister(!isRegister); setError(''); }}
+                                class="text-xs text-blue-600 hover:underline font-medium"
+                            >
+                                {isRegister ? 'Already have an account? Sign In' : "Don't have an account? Register"}
+                            </button>
+                        </div>
+
+                        {/* Quick Demo Switcher */}
+                        <div class="mt-6 pt-5 border-t border-slate-200">
+                            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider text-center mb-3">Quick Demo Logins</p>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button
+                                    onClick={() => quickLogin('alice@example.com')}
+                                    class="px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 transition text-left"
+                                >
+                                    👩‍💻 Alice Smith
+                                </button>
+                                <button
+                                    onClick={() => quickLogin('bob@example.com')}
+                                    class="px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 transition text-left"
+                                >
+                                    👨‍💼 Bob Jones
+                                </button>
+                                <button
+                                    onClick={() => quickLogin('charlie@example.com')}
+                                    class="px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 transition text-left"
+                                >
+                                    🧑‍🔧 Charlie Brown
+                                </button>
+                                <button
+                                    onClick={() => quickLogin('diana@example.com')}
+                                    class="px-3 py-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 transition text-left"
+                                >
+                                    🦸‍♀️ Diana Prince
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // CHAT DASHBOARD
+        // ==========================================
+        function ChatDashboard({ currentUser, token, onLogout }) {
+            const [socket, setSocket] = useState(null);
+            const [users, setUsers] = useState([]);
+            const [activeUser, setActiveUser] = useState(null);
+            const [conversationId, setConversationId] = useState(null);
+            const [messages, setMessages] = useState([]);
+            const [typingStatus, setTypingStatus] = useState(null);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [unreadCounts, setUnreadCounts] = useState({});
+
+            // 1. Initialize WebSocket Connection
+            useEffect(() => {
+                const newSocket = io('/', {
+                    auth: { token },
+                    transports: ['websocket', 'polling'],
+                });
+
+                newSocket.on('connect', () => {
+                    console.log('⚡ Connected to WebSocket server with ID:', newSocket.id);
+                });
+
+                // Listen for online/offline presence changes
+                newSocket.on('user:status_changed', ({ userId, status, lastSeen }) => {
+                    setUsers(prevUsers => prevUsers.map(u => {
+                        if (u.id === userId) {
+                            return { ...u, status, last_seen_at: lastSeen || u.last_seen_at };
+                        }
+                        return u;
+                    }));
+
+                    setActiveUser(prevActive => {
+                        if (prevActive && prevActive.id === userId) {
+                            return { ...prevActive, status, last_seen_at: lastSeen || prevActive.last_seen_at };
+                        }
+                        return prevActive;
+                    });
+                });
+
+                // Listen for typing events
+                newSocket.on('user:typing', ({ senderId, isTyping }) => {
+                    setTypingStatus(prev => {
+                        if (isTyping) {
+                            return { senderId };
+                        } else if (prev && prev.senderId === senderId) {
+                            return null;
+                        }
+                        return prev;
+                    });
+                });
+
+                // Listen for read receipts (message:status_update)
+                newSocket.on('message:status_update', ({ conversationId: cId, status }) => {
+                    setMessages(prev => prev.map(m => (m.conversationId === cId ? { ...m, status } : m)));
+                });
+
+                setSocket(newSocket);
+
+                return () => {
+                    newSocket.disconnect();
+                };
+            }, [token]);
+
+            // 2. Fetch User List
+            const fetchUsers = async () => {
+                try {
+                    const res = await apiFetch('/users');
+                    setUsers(res.data);
+                    if (!activeUser && res.data.length > 0) {
+                        selectContact(res.data[0]);
+                    }
+                } catch (err) {
+                    console.error('Failed to load users:', err);
+                }
+            };
+
+            useEffect(() => {
+                fetchUsers();
+            }, []);
+
+            // 3. Listen for Incoming Messages
+            useEffect(() => {
+                if (!socket) return;
+
+                const handleMessageReceive = (newMsg) => {
+                    // Check if message belongs to currently active conversation
+                    if (activeUser && newMsg.senderId === activeUser.id) {
+                        setMessages(prev => [...prev, newMsg]);
+
+                        // Emit seen event back to sender
+                        socket.emit('message:seen', {
+                            conversationId: newMsg.conversationId,
+                            senderId: newMsg.senderId,
+                            messageIds: [newMsg.id],
+                        });
+                    } else {
+                        // Increment unread count for that sender
+                        setUnreadCounts(prev => ({
+                            ...prev,
+                            [newMsg.senderId]: (prev[newMsg.senderId] || 0) + 1,
+                        }));
+                    }
+                };
+
+                socket.on('message:receive', handleMessageReceive);
+
+                return () => {
+                    socket.off('message:receive', handleMessageReceive);
+                };
+            }, [socket, activeUser]);
+
+            // 4. Select Contact & Load Chat History
+            const selectContact = async (contact) => {
+                setActiveUser(contact);
+                setTypingStatus(null);
+                setUnreadCounts(prev => ({ ...prev, [contact.id]: 0 }));
+
+                try {
+                    // Find or create conversation
+                    const convoRes = await apiFetch('/conversations', {
+                        method: 'POST',
+                        body: JSON.stringify({ targetUserId: contact.id }),
+                    });
+
+                    const cId = convoRes.data.conversationId;
+                    setConversationId(cId);
+
+                    // Fetch message history
+                    const msgRes = await apiFetch(`/conversations/${cId}/messages?limit=60`);
+                    setMessages(msgRes.data);
+
+                    // Mark unread messages as read
+                    if (socket) {
+                        socket.emit('message:seen', {
+                            conversationId: cId,
+                            senderId: contact.id,
+                        });
+                    }
+                } catch (err) {
+                    console.error('Failed to load conversation:', err);
+                }
+            };
+
+            // 5. Send Message Callback
+            const handleSendMessage = (content) => {
+                if (!socket || !activeUser || !content.trim()) return;
+
+                const tempId = 'temp_' + Date.now();
+
+                // Optimistic UI update
+                const optimisticMsg = {
+                    id: tempId,
+                    conversationId,
+                    senderId: currentUser.id,
+                    recipientId: activeUser.id,
+                    content: content,
+                    status: 'sent',
+                    createdAt: new Date().toISOString(),
+                };
+                setMessages(prev => [...prev, optimisticMsg]);
+
+                // Emit event over WebSocket (instant delivery, zero polling)
+                socket.emit('message:send', {
+                    recipientId: activeUser.id,
+                    content,
+                    tempId,
+                }, (ack) => {
+                    if (ack && ack.success) {
+                        // Replace temp message with server response (with real ID and database masked content)
+                        setMessages(prev => prev.map(m => m.id === tempId ? ack.message : m));
+                    }
+                });
+            };
+
+            const filteredUsers = useMemo(() => {
+                return users.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()));
+            }, [users, searchTerm]);
+
+            return (
+                <div class="flex h-screen bg-slate-100 overflow-hidden">
+                    {/* LEFT SIDEBAR: USER LIST */}
+                    <div class="w-80 md:w-96 bg-white border-r border-slate-200 flex flex-col h-full shadow-sm">
+                        {/* Profile Header */}
+                        <div class="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+                            <div class="flex items-center gap-3">
+                                <div class="relative">
+                                    <img src={currentUser.avatar} alt={currentUser.name} class="w-10 h-10 rounded-full bg-slate-200 border border-slate-300" />
+                                    <span class="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full"></span>
+                                </div>
+                                <div class="overflow-hidden">
+                                    <h2 class="text-sm font-semibold text-slate-800 truncate">{currentUser.name}</h2>
+                                    <p class="text-xs text-emerald-600 font-medium">Online</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={onLogout}
+                                title="Sign Out"
+                                class="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                            >
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        {/* Search Input */}
+                        <div class="p-3 border-b border-slate-100">
+                            <div class="relative">
+                                <input
+                                    type="text"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    placeholder="Search contacts..."
+                                    class="w-full pl-9 pr-3 py-2 bg-slate-100 border-0 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-700"
+                                />
+                                <svg class="w-4 h-4 text-slate-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        {/* User List */}
+                        <div class="flex-1 overflow-y-auto divide-y divide-slate-100">
+                            {filteredUsers.length === 0 ? (
+                                <div class="p-6 text-center text-xs text-slate-400">
+                                    No contacts found
+                                </div>
+                            ) : (
+                                filteredUsers.map(user => {
+                                    const isSelected = activeUser && activeUser.id === user.id;
+                                    const isOnline = user.status === 'online';
+                                    const unread = unreadCounts[user.id] || 0;
+
+                                    return (
+                                        <div
+                                            key={user.id}
+                                            onClick={() => selectContact(user)}
+                                            class={`p-3.5 flex items-center justify-between cursor-pointer transition ${
+                                                isSelected ? 'bg-blue-50/80 border-r-4 border-blue-600' : 'hover:bg-slate-50'
+                                            }`}
+                                        >
+                                            <div class="flex items-center gap-3 min-w-0">
+                                                <div class="relative flex-shrink-0">
+                                                    <img src={user.avatar} alt={user.name} class="w-11 h-11 rounded-full bg-slate-200 border border-slate-200" />
+                                                    <span class={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
+                                                        isOnline ? 'bg-emerald-500' : 'bg-slate-400'
+                                                    }`}></span>
+                                                </div>
+                                                <div class="min-w-0">
+                                                    <h3 class={`text-sm font-semibold truncate ${isSelected ? 'text-blue-900' : 'text-slate-800'}`}>
+                                                        {user.name}
+                                                    </h3>
+                                                    <p class="text-xs text-slate-400 truncate mt-0.5">
+                                                        {isOnline ? 'Active now' : 'Offline'}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            {unread > 0 && (
+                                                <span class="w-5 h-5 bg-blue-600 text-white text-[11px] font-bold rounded-full flex items-center justify-center flex-shrink-0">
+                                                    {unread}
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+
+                    {/* RIGHT AREA: ACTIVE CHAT CONVERSATION */}
+                    <div class="flex-1 flex flex-col h-full bg-slate-50">
+                        {activeUser ? (
+                            <ChatWindow
+                                activeUser={activeUser}
+                                currentUser={currentUser}
+                                messages={messages}
+                                isTyping={typingStatus && typingStatus.senderId === activeUser.id}
+                                onSendMessage={handleSendMessage}
+                                socket={socket}
+                            />
+                        ) : (
+                            <div class="flex-1 flex flex-col items-center justify-center text-slate-400 p-8">
+                                <div class="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mb-4">
+                                    <svg class="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                    </svg>
+                                </div>
+                                <h3 class="text-base font-semibold text-slate-600">Select a contact to start chatting</h3>
+                                <p class="text-xs text-slate-400 mt-1">Real-time instant delivery with phone & email data masking</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // ACTIVE CHAT WINDOW COMPONENT
+        // ==========================================
+        function ChatWindow({ activeUser, currentUser, messages, isTyping, onSendMessage, socket }) {
+            const [inputText, setInputText] = useState('');
+            const messagesEndRef = useRef(null);
+            const typingTimeoutRef = useRef(null);
+
+            // Auto-scroll to bottom on new messages
+            useEffect(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, [messages, isTyping]);
+
+            // Handle typing indicator emission
+            const handleInputChange = (e) => {
+                const text = e.target.value;
+                setInputText(text);
+
+                if (!socket) return;
+
+                socket.emit('message:typing', {
+                    recipientId: activeUser.id,
+                    isTyping: true,
+                });
+
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+                typingTimeoutRef.current = setTimeout(() => {
+                    socket.emit('message:typing', {
+                        recipientId: activeUser.id,
+                        isTyping: false,
+                    });
+                }, 1500);
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!inputText.trim()) return;
+
+                if (socket) {
+                    socket.emit('message:typing', { recipientId: activeUser.id, isTyping: false });
+                }
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+                onSendMessage(inputText);
+                setInputText('');
+            };
+
+            // Real-time Client-side Masking Preview Tooltip
+            const maskingPreview = useMemo(() => {
+                if (!inputText) return null;
+                const emailRegex = /([a-zA-Z0-9_.+-]+)@([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)/gi;
+                const phoneRegex = /(?:\+?\d{1,3}[\s-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}/g;
+                const hasEmail = emailRegex.test(inputText);
+                const hasPhone = phoneRegex.test(inputText);
+
+                if (hasEmail || hasPhone) {
+                    return '🔒 Sensitive contact information detected. Middle digits and email usernames will be automatically masked upon sending.';
+                }
+                return null;
+            }, [inputText]);
+
+            const isOnline = activeUser.status === 'online';
+
+            return (
+                <div class="flex flex-col h-full bg-slate-50">
+                    {/* Header */}
+                    <div class="p-4 bg-white border-b border-slate-200 flex items-center justify-between shadow-xs">
+                        <div class="flex items-center gap-3">
+                            <div class="relative">
+                                <img src={activeUser.avatar} alt={activeUser.name} class="w-10 h-10 rounded-full bg-slate-200 border border-slate-200" />
+                                <span class={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
+                                    isOnline ? 'bg-emerald-500' : 'bg-slate-400'
+                                }`}></span>
+                            </div>
+                            <div>
+                                <h2 class="text-sm font-semibold text-slate-800">{activeUser.name}</h2>
+                                <p class="text-xs text-slate-400">
+                                    {isTyping ? (
+                                        <span class="text-blue-600 font-medium animate-pulse">Typing...</span>
+                                    ) : isOnline ? (
+                                        <span class="text-emerald-600 font-medium">Online</span>
+                                    ) : (
+                                        'Offline'
+                                    )}
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Privacy Badge */}
+                        <div class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-800 rounded-full text-[11px] font-medium">
+                            <svg class="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                            Auto-Masking Active
+                        </div>
+                    </div>
+
+                    {/* Messages Area */}
+                    <div class="flex-1 overflow-y-auto p-4 space-y-3">
+                        {messages.length === 0 ? (
+                            <div class="h-full flex items-center justify-center text-xs text-slate-400">
+                                No messages yet. Say hello! 👋
+                            </div>
+                        ) : (
+                            messages.map((msg, index) => {
+                                const isMe = msg.senderId === currentUser.id;
+                                const timeStr = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+                                return (
+                                    <div
+                                        key={msg.id || index}
+                                        class={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                                    >
+                                        <div
+                                            class={`max-w-[75%] px-4 py-2.5 rounded-2xl shadow-xs text-sm break-words ${
+                                                isMe
+                                                    ? 'bg-blue-600 text-white rounded-br-xs'
+                                                    : 'bg-white text-slate-800 border border-slate-200 rounded-bl-xs'
+                                            }`}
+                                        >
+                                            <p class="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                        </div>
+                                        <div class="flex items-center gap-1 mt-1 text-[10px] text-slate-400 px-1">
+                                            <span>{timeStr}</span>
+                                            {isMe && (
+                                                <span class="ml-0.5">
+                                                    {msg.status === 'read' ? (
+                                                        <span class="text-blue-500 font-bold" title="Read">✓✓</span>
+                                                    ) : (
+                                                        <span>✓</span>
+                                                    )}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+
+                        {/* Typing Animation Bubble */}
+                        {isTyping && (
+                            <div class="flex items-center gap-1.5 bg-white border border-slate-200 px-3.5 py-2 rounded-2xl w-fit shadow-xs">
+                                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full typing-dot"></span>
+                                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full typing-dot"></span>
+                                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full typing-dot"></span>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Masking Alert Banner */}
+                    {maskingPreview && (
+                        <div class="mx-4 mb-2 p-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-xs flex items-center gap-2">
+                            <svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>{maskingPreview}</span>
+                        </div>
+                    )}
+
+                    {/* Input Area */}
+                    <div class="p-3 bg-white border-t border-slate-200">
+                        <form onSubmit={handleSubmit} class="flex items-center gap-2">
+                            <input
+                                type="text"
+                                value={inputText}
+                                onChange={handleInputChange}
+                                placeholder="Type a message (e.g. Call me at 9876543210 or email test@example.com)..."
+                                class="flex-1 px-4 py-2.5 bg-slate-100 border border-transparent focus:border-blue-500 focus:bg-white rounded-xl text-sm focus:outline-none transition"
+                            />
+                            <button
+                                type="submit"
+                                disabled={!inputText.trim()}
+                                class="p-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl transition shadow-sm active:scale-95"
+                                title="Send Message"
+                            >
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                </svg>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        // Mount the React Application
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
